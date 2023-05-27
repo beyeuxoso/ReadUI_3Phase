@@ -65,5 +65,23 @@
     <ClInclude Include="__vm\.ReadUIP_3Phase.vsarduino.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="__vm\.ReadUI_3Phase.vsarduino.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="STM32_ISR_Timer.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="STM32_ISR_Timer.hpp">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="STM32_ISR_Timer-Impl.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="STM32TimerInterrupt.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TimerInterrupt_Generic_Debug.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

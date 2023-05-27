@@ -9,6 +9,7 @@
 #include "Thread.h"
 #include "StaticThreadController.h"
 #include "ModbusRtu.h"
+#include "STM32TimerInterrupt.h"
 
 #define TXEN (PA1)
 #define SlaveID (1U)
@@ -95,7 +96,7 @@ Thread ReadVoltCur2_3 = Thread();
 ThreadController controller = ThreadController();
 
 Modbus Slave(SlaveID, Serial, TXEN);
-uint16_t data[36];
+uint16_t data[36] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36 };
 
 unsigned long time = 0;
 
@@ -377,6 +378,14 @@ void Init_Thread()
     controller.add(&ReadVoltCur2_3);
 }
 
+// Init STM32 timer TIM1
+STM32Timer ITimer0(TIM1);
+#define ISR_TIMER_INTERVAL  1
+void TimerHandler0()
+{
+    //Serial_dbg.println("Call timmer 0");
+    Slave.poll(data, 36);
+}
 
 // the setup function runs once when you press reset or power the board
 void setup() {
@@ -385,85 +394,99 @@ void setup() {
     Serial_dbg.begin(9600);
     Slave.start();
     Serial_dbg.println("Start:");
+    // Interval in microsecs
+    if (ITimer0.attachInterruptInterval(ISR_TIMER_INTERVAL * 50, TimerHandler0))
+    {
+        Serial_dbg.print(F("Starting ITimer0 OK, millis() = ")); Serial_dbg.println(millis());
+    }
+    else
+        Serial_dbg.println(F("Can't set ITimer0. Select another freq. or timer"));
 }
 
 // the loop function runs over and over again until power down or reset
 void loop() {
+#if 0
     if (millis() - time > 1000) {
-        Serial_dbg.println("\\\\\\\\");
-        if (data[0] != NAN || data[6] != NAN || data[12] != NAN || data[18] != NAN || data[24] != NAN || data[30] != NAN) {
-            Serial_dbg.print("Voltage: "); Serial_dbg.print((float)data[0] / 100.0, 2); Serial_dbg.print("   ");\
-                                           Serial_dbg.print((float)data[6] / 100.0, 2); Serial_dbg.print("     ");\ 
-                                           Serial_dbg.print((float)data[12] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[18] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[24] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.println((float)data[30] / 100.0, 2); 
-        }
-        else {
-            Serial_dbg.println("Error reading voltage");
-        }
-
-        if (data[1] != NAN || data[7] != NAN || data[13] != NAN || data[19] != NAN || data[25] != NAN || data[31] != NAN) {
-            Serial_dbg.print("Current: "); Serial_dbg.print((float)data[1] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[7] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[13] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[19] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.print((float)data[25] / 100.0, 2); Serial_dbg.print("   "); \
-                                           Serial_dbg.println((float)data[31] / 100.0, 2);
-        }
-        else {
-            Serial_dbg.println("Error reading current");
-        }
-
-        if (data[2] != NAN || data[8] != NAN || data[14] != NAN || data[20] != NAN || data[26] != NAN || data[32] != NAN) {
-            Serial_dbg.print("Power: "); Serial_dbg.print((float)data[2] / 100.0, 2); Serial_dbg.print("   "); \
-                                         Serial_dbg.print((float)data[8] / 100.0, 2); Serial_dbg.print("   "); \
-                                         Serial_dbg.print((float)data[14] / 100.0, 2); Serial_dbg.print("   "); \
-                                         Serial_dbg.print((float)data[20] / 100.0, 2); Serial_dbg.print("   "); \
-                                         Serial_dbg.print((float)data[26] / 100.0, 2); Serial_dbg.print("   "); \
-                                         Serial_dbg.println((float)data[32] / 100.0, 2);
-        }
-        else {
-            Serial_dbg.println("Error reading Power");
-        }
-
-        if (data[3] != NAN || data[9] != NAN || data[15] != NAN || data[21] != NAN || data[27] != NAN || data[33] != NAN) {
-            Serial_dbg.print("Energy: "); Serial_dbg.print((float)data[3] / 100.0, 2); Serial_dbg.print("   "); \
-                                          Serial_dbg.print((float)data[9] / 100.0, 2); Serial_dbg.print("   "); \
-                                          Serial_dbg.print((float)data[15] / 100.0, 2); Serial_dbg.print("   "); \
-                                          Serial_dbg.print((float)data[21] / 100.0, 2); Serial_dbg.print("   "); \
-                                          Serial_dbg.print((float)data[27] / 100.0, 2); Serial_dbg.print("   "); \
-                                          Serial_dbg.println((float)data[33] / 100.0, 2);
-        }
-        else {
-            Serial_dbg.println("Error reading energy");
-        }
-
-        if (data[4] != NAN || data[10] != NAN || data[16] != NAN || data[22] != NAN || data[28] != NAN || data[34] != NAN) {
-            Serial_dbg.print("Frequency: "); Serial_dbg.print((float)data[4] / 100.0, 2); Serial_dbg.print("   "); \
-                                             Serial_dbg.print((float)data[10] / 100.0, 2); Serial_dbg.print("   "); \
-                                             Serial_dbg.print((float)data[16] / 100.0, 2); Serial_dbg.print("   "); \
-                                             Serial_dbg.print((float)data[22] / 100.0, 2); Serial_dbg.print("   "); \
-                                             Serial_dbg.print((float)data[28] / 100.0, 2); Serial_dbg.print("   "); \
-                                             Serial_dbg.println((float)data[34] / 100.0, 2);
-        }
-        else {
-            Serial_dbg.println("Error reading frequency");
-        }
-
-        if (data[5] != NAN || data[11] != NAN || data[17] != NAN || data[23] != NAN || data[29] != NAN || data[35] != NAN) {
-            Serial_dbg.print("PF: "); Serial_dbg.print((float)data[5] / 100.0, 2); Serial_dbg.print("   "); \
-                                      Serial_dbg.print((float)data[11] / 100.0, 2); Serial_dbg.print("   "); \
-                                      Serial_dbg.print((float)data[17] / 100.0, 2); Serial_dbg.print("   "); \
-                                      Serial_dbg.print((float)data[23] / 100.0, 2); Serial_dbg.print("   "); \
-                                      Serial_dbg.print((float)data[29] / 100.0, 2); Serial_dbg.print("   "); \
-                                      Serial_dbg.println((float)data[35] / 100.0, 2);
-        }
-        else {
-            Serial_dbg.println("Error reading power factor");
-        }
+        ReadUIP_3Phase();
         time = millis();
     }
+#endif
     controller.run();
-    Slave.poll(data, 36);
+    //Slave.poll(data, 36);
+}
+
+
+void ReadUIP_3Phase() {
+    Serial_dbg.println("\\\\\\\\");
+    if (data[0] != NAN || data[6] != NAN || data[12] != NAN || data[18] != NAN || data[24] != NAN || data[30] != NAN) {
+        Serial_dbg.print("Voltage: "); Serial_dbg.print((float)data[0] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[6] / 100.0, 2); Serial_dbg.print("     "); \
+            Serial_dbg.print((float)data[12] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[18] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[24] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[30] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading voltage");
+    }
+
+    if (data[1] != NAN || data[7] != NAN || data[13] != NAN || data[19] != NAN || data[25] != NAN || data[31] != NAN) {
+        Serial_dbg.print("Current: "); Serial_dbg.print((float)data[1] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[7] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[13] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[19] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[25] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[31] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading current");
+    }
+
+    if (data[2] != NAN || data[8] != NAN || data[14] != NAN || data[20] != NAN || data[26] != NAN || data[32] != NAN) {
+        Serial_dbg.print("Power: "); Serial_dbg.print((float)data[2] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[8] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[14] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[20] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[26] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[32] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading Power");
+    }
+
+    if (data[3] != NAN || data[9] != NAN || data[15] != NAN || data[21] != NAN || data[27] != NAN || data[33] != NAN) {
+        Serial_dbg.print("Energy: "); Serial_dbg.print((float)data[3] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[9] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[15] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[21] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[27] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[33] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading energy");
+    }
+
+    if (data[4] != NAN || data[10] != NAN || data[16] != NAN || data[22] != NAN || data[28] != NAN || data[34] != NAN) {
+        Serial_dbg.print("Frequency: "); Serial_dbg.print((float)data[4] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[10] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[16] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[22] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[28] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[34] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading frequency");
+    }
+
+    if (data[5] != NAN || data[11] != NAN || data[17] != NAN || data[23] != NAN || data[29] != NAN || data[35] != NAN) {
+        Serial_dbg.print("PF: "); Serial_dbg.print((float)data[5] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[11] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[17] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[23] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.print((float)data[29] / 100.0, 2); Serial_dbg.print("   "); \
+            Serial_dbg.println((float)data[35] / 100.0, 2);
+    }
+    else {
+        Serial_dbg.println("Error reading power factor");
+    }
 }
