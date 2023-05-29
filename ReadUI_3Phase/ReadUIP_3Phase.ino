@@ -5,6 +5,7 @@
 */
 #include <SoftwareSerial.h>
 #include <HardwareSerial.h>
+#include <Wire.h>
 #include "ThreadController.h"
 #include "Thread.h"
 #include "StaticThreadController.h"
@@ -44,6 +45,7 @@ byte resetEnergy[4] = { 0xf8, 0x42, 0xc2, 0x41 };
 
 HardwareSerial Serial_dbg(PA10, PA9);//RX-TX
 
+const int16_t I2C_SLAVE = 0x13;
 
 
 enum {
@@ -74,6 +76,23 @@ enum {
     _crc_L__,
     _RESPONSE_SIZE__
 };
+
+typedef struct{
+    uint8_t PzemID;
+    uint16_t Voltage;
+    uint16_t Current;
+    uint16_t Power;
+    uint32_t Energy;
+    uint16_t Frequency;
+    uint16_t PF;
+}Pzem_data;
+
+Pzem_data Pzem_data_table[PZEM_COUNT];
+uint8_t Pzem_idx = 0;
+uint8_t Pzem_ID = 0;
+uint8_t Reset_Pzem = 0;
+int i = 0;
+
 SoftwareSerial* yy1 = new SoftwareSerial(TX_PZEM1_1, RX_PZEM1_1);
 Stream* port1 = yy1;
 SoftwareSerial* yy2 = new SoftwareSerial(TX_PZEM1_2, RX_PZEM1_2);
@@ -95,10 +114,53 @@ Thread ReadVoltCur2_2 = Thread();
 Thread ReadVoltCur2_3 = Thread();
 ThreadController controller = ThreadController();
 
-Modbus Slave(SlaveID, Serial, TXEN);
+//Modbus Slave(SlaveID, Serial, TXEN);
 uint16_t data[36] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36 };
 
 unsigned long time = 0;
+
+void requestEvent()
+{
+    if (Pzem_ID == 6) Pzem_ID = 0;
+        Wire.write(Pzem_data_table[Pzem_ID].PzemID);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Voltage) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Voltage)>>8) & 0xFF);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Current) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Current) >> 8) & 0xFF);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Frequency) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Frequency) >> 8) & 0xFF);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].PF) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].PF) >> 8) & 0xFF);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Power) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Power) >> 8) & 0xFF);
+        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Energy) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 8) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 16) & 0xFF);
+        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 24) & 0xFF);
+        Pzem_ID++;
+}
+
+void receiveEvent(int bytes) {
+    uint8_t data_i2c[bytes];
+    uint8_t idx_i2c=0;
+    while (Wire.available())
+    {
+        data_i2c[idx_i2c] = Wire.read();
+        idx_i2c++;
+    }
+    if (data_i2c[0] == 4) {
+        Reset_Pzem = data_i2c[1];
+    }
+}
+
+void Init_I2C()
+{
+    Wire.setSCL(PB6);
+    Wire.setSDA(PB7);
+    Wire.begin(I2C_SLAVE);
+    Wire.onRequest(requestEvent);
+    Wire.onReceive(receiveEvent);
+}
 
 void Read_PZEM1_1()
 {
@@ -108,7 +170,13 @@ void Read_PZEM1_1()
     while (port1->available()) {
         port1->read();
     }
-    port1->write(getValue, sizeof(getValue));
+    if (Reset_Pzem == 0) {
+        port1->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 1) {
+        port1->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
@@ -121,21 +189,24 @@ void Read_PZEM1_1()
         }
     }
     if (b_complete) {
-        data[0] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        data[1] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        data[2] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        data[3] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-        data[4] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        data[5] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        Pzem_data_table[Pzem_idx].PzemID=Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
     }
     else {
-        data[0] = 0;
-        data[1] = 0;
-        data[2] = 0;
-        data[3] = 0;
-        data[4] = 0;
-        data[5] = 0;
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = 0;
+        Pzem_data_table[Pzem_idx].Current = 0;
+        Pzem_data_table[Pzem_idx].Power = 0;
+        Pzem_data_table[Pzem_idx].Energy = 0;
+        Pzem_data_table[Pzem_idx].Frequency = 0;
+        Pzem_data_table[Pzem_idx].PF = 0;
     }
+    Pzem_idx++;
     yy1->end();
     tt1->end();
 }
@@ -148,8 +219,13 @@ void Read_PZEM1_2()
     while (port2->available()) {
         port2->read();
     }
-port2->write(getValue, sizeof(getValue));
-
+    if (Reset_Pzem == 0) {
+        port2->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 2) {
+        port2->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
 unsigned long temTime = millis();
 bool b_complete = false;
 uint8_t myBuf[bytes_request];
@@ -163,22 +239,25 @@ while ((millis() - temTime) < 100) {
     }
 }
 if (b_complete) {
-    data[6] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-    data[7] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-    data[8] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-    data[9] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-    data[10] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-    data[11] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+    Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+    Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+    Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+    Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+    Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+    Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+    Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
 
 }
 else {
-    data[6] = 0;
-    data[7] = 0;
-    data[8] = 0;
-    data[9] = 0;
-    data[10] = 0;
-    data[11] = 0;
+    Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+    Pzem_data_table[Pzem_idx].Voltage = 0;
+    Pzem_data_table[Pzem_idx].Current = 0;
+    Pzem_data_table[Pzem_idx].Power = 0;
+    Pzem_data_table[Pzem_idx].Energy = 0;
+    Pzem_data_table[Pzem_idx].Frequency = 0;
+    Pzem_data_table[Pzem_idx].PF = 0;
 }
+Pzem_idx++;
 yy2->end();
 tt2->end();
 }
@@ -191,7 +270,13 @@ void Read_PZEM1_3()
     while (port3->available()) {
         port3->read();
     }
-    port3->write(getValue, sizeof(getValue));
+    if (Reset_Pzem == 0) {
+        port3->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 3) {
+        port3->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
@@ -204,21 +289,24 @@ void Read_PZEM1_3()
         }
     }
     if (b_complete) {
-        data[12] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        data[13] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        data[14] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        data[15] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-        data[16] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        data[17] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
     }
     else {
-        data[12] = 0;
-        data[13] = 0;
-        data[14] = 0;
-        data[15] = 0;
-        data[16] = 0;
-        data[17] = 0;
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = 0;
+        Pzem_data_table[Pzem_idx].Current = 0;
+        Pzem_data_table[Pzem_idx].Power = 0;
+        Pzem_data_table[Pzem_idx].Energy = 0;
+        Pzem_data_table[Pzem_idx].Frequency = 0;
+        Pzem_data_table[Pzem_idx].PF = 0;
     }
+    Pzem_idx++;
     yy3->end();
     tt3->end();
 }
@@ -231,7 +319,13 @@ void Read_PZEM2_1()
     while (port4->available()) {
         port4->read();
     }
-    port4->write(getValue, sizeof(getValue));
+    if (Reset_Pzem == 0) {
+        port4->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 4) {
+        port4->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
@@ -244,21 +338,24 @@ void Read_PZEM2_1()
         }
     }
     if (b_complete) {
-        data[18] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        data[19] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        data[20] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        data[21] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-        data[22] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        data[23] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
     }
     else {
-        data[18] = 0;
-        data[19] = 0;
-        data[20] = 0;
-        data[21] = 0;
-        data[22] = 0;
-        data[23] = 0;
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = 0;
+        Pzem_data_table[Pzem_idx].Current = 0;
+        Pzem_data_table[Pzem_idx].Power = 0;
+        Pzem_data_table[Pzem_idx].Energy = 0;
+        Pzem_data_table[Pzem_idx].Frequency = 0;
+        Pzem_data_table[Pzem_idx].PF = 0;
     }
+    Pzem_idx++;
     yy4->end();
     tt4->end();
 }
@@ -271,7 +368,13 @@ void Read_PZEM2_2()
     while (port5->available()) {
         port5->read();
     }
-    port5->write(getValue, sizeof(getValue));
+    if (Reset_Pzem == 0) {
+        port5->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 5) {
+        port5->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
@@ -284,21 +387,24 @@ void Read_PZEM2_2()
         }
     }
     if (b_complete) {
-        data[24] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        data[25] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        data[26] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        data[27] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-        data[28] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        data[29] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
     }
     else {
-        data[24] = 0;
-        data[25] = 0;
-        data[26] = 0;
-        data[27] = 0;
-        data[28] = 0;
-        data[29] = 0;
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
+        Pzem_data_table[Pzem_idx].Voltage = 0;
+        Pzem_data_table[Pzem_idx].Current = 0;
+        Pzem_data_table[Pzem_idx].Power = 0;
+        Pzem_data_table[Pzem_idx].Energy = 0;
+        Pzem_data_table[Pzem_idx].Frequency = 0;
+        Pzem_data_table[Pzem_idx].PF = 0;
     }
+    Pzem_idx++;
     yy5->end();
     tt5->end();
 }
@@ -311,7 +417,13 @@ void Read_PZEM2_3()
     while (port6->available()) {
         port6->read();
     }
-    port6->write(getValue, sizeof(getValue));
+    if (Reset_Pzem == 0) {
+        port6->write(getValue, sizeof(getValue));
+    }
+    if (Reset_Pzem == 6) {
+        port6->write(resetEnergy, sizeof(resetEnergy));
+        Reset_Pzem = 0;
+    }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
@@ -324,21 +436,24 @@ void Read_PZEM2_3()
         }
     }
     if (b_complete) {
-        data[30] = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        data[31] = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        data[32] = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        data[33] = (uint16_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 100);
-        data[34] = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        data[35] = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx + 1;
+        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
     }
     else {
-        data[30] = 0;
-        data[31] = 0;
-        data[32] = 0;
-        data[33] = 0;
-        data[34] = 0;
-        data[35] = 0;
+        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx + 1;
+        Pzem_data_table[Pzem_idx].Voltage = 0;
+        Pzem_data_table[Pzem_idx].Current = 0;
+        Pzem_data_table[Pzem_idx].Power = 0;
+        Pzem_data_table[Pzem_idx].Energy = 0;
+        Pzem_data_table[Pzem_idx].Frequency = 0;
+        Pzem_data_table[Pzem_idx].PF = 0;
     }
+    Pzem_idx = 0;
     yy6->end();
     tt6->end();
 }
@@ -378,115 +493,69 @@ void Init_Thread()
     controller.add(&ReadVoltCur2_3);
 }
 
-// Init STM32 timer TIM1
-STM32Timer ITimer0(TIM1);
-#define ISR_TIMER_INTERVAL  1
-void TimerHandler0()
-{
-    //Serial_dbg.println("Call timmer 0");
-    Slave.poll(data, 36);
-}
+//// Init STM32 timer TIM1
+//STM32Timer ITimer0(TIM1);
+//#define ISR_TIMER_INTERVAL  1
+//void TimerHandler0()
+//{
+//    //Serial_dbg.println("Call timmer 0");
+//    Slave.poll(data, 36);
+//}
 
 // the setup function runs once when you press reset or power the board
 void setup() {
     Init_Thread();
     Serial.begin(9600);
     Serial_dbg.begin(9600);
-    Slave.start();
+    Init_I2C();
+    //Slave.start();
     Serial_dbg.println("Start:");
     // Interval in microsecs
-    if (ITimer0.attachInterruptInterval(ISR_TIMER_INTERVAL * 50, TimerHandler0))
+    /*if (ITimer0.attachInterruptInterval(ISR_TIMER_INTERVAL * 50, TimerHandler0))
     {
         Serial_dbg.print(F("Starting ITimer0 OK, millis() = ")); Serial_dbg.println(millis());
     }
     else
-        Serial_dbg.println(F("Can't set ITimer0. Select another freq. or timer"));
+        Serial_dbg.println(F("Can't set ITimer0. Select another freq. or timer"));*/
 }
 
 // the loop function runs over and over again until power down or reset
 void loop() {
 #if 0
     if (millis() - time > 1000) {
-        ReadUIP_3Phase();
+        if (i == 6) i = 0;
+        ReadUIP_3Phase_I2C(i);
+        i++;
         time = millis();
     }
 #endif
     controller.run();
-    //Slave.poll(data, 36);
 }
 
 
-void ReadUIP_3Phase() {
-    Serial_dbg.println("\\\\\\\\");
-    if (data[0] != NAN || data[6] != NAN || data[12] != NAN || data[18] != NAN || data[24] != NAN || data[30] != NAN) {
-        Serial_dbg.print("Voltage: "); Serial_dbg.print((float)data[0] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[6] / 100.0, 2); Serial_dbg.print("     "); \
-            Serial_dbg.print((float)data[12] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[18] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[24] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[30] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading voltage");
-    }
+void ReadUIP_3Phase_modbus() {
+        Serial_dbg.println("\\\\\\\\");
+        if (data[i] != NAN || data[i+6] != NAN || data[i+12] != NAN || data[i+18] != NAN || data[i+24] != NAN || data[i+30] != NAN) {
+            Serial_dbg.printf("Pzem%d: ", i + 1);  Serial_dbg.println();
+            Serial_dbg.print("Voltage:");    Serial_dbg.println((float)data[i] / 100.0, 2); \
+            Serial_dbg.print("Current:");    Serial_dbg.println((float)data[i+1] / 100.0, 2); \
+            Serial_dbg.print("Power:");    Serial_dbg.println((float)data[i+2] / 100.0, 2); \
+            Serial_dbg.print("Energy:");    Serial_dbg.println((float)data[i+3] / 100.0, 3); \
+            Serial_dbg.print("Frequency:");    Serial_dbg.println((float)data[i+4] / 100.0, 2); \
+            Serial_dbg.print("PF:");    Serial_dbg.println((float)data[i+5] / 100.0, 2); \
+        }
+        else {
+            Serial_dbg.println("Error reading");
+        }
+}
 
-    if (data[1] != NAN || data[7] != NAN || data[13] != NAN || data[19] != NAN || data[25] != NAN || data[31] != NAN) {
-        Serial_dbg.print("Current: "); Serial_dbg.print((float)data[1] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[7] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[13] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[19] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[25] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[31] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading current");
-    }
-
-    if (data[2] != NAN || data[8] != NAN || data[14] != NAN || data[20] != NAN || data[26] != NAN || data[32] != NAN) {
-        Serial_dbg.print("Power: "); Serial_dbg.print((float)data[2] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[8] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[14] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[20] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[26] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[32] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading Power");
-    }
-
-    if (data[3] != NAN || data[9] != NAN || data[15] != NAN || data[21] != NAN || data[27] != NAN || data[33] != NAN) {
-        Serial_dbg.print("Energy: "); Serial_dbg.print((float)data[3] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[9] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[15] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[21] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[27] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[33] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading energy");
-    }
-
-    if (data[4] != NAN || data[10] != NAN || data[16] != NAN || data[22] != NAN || data[28] != NAN || data[34] != NAN) {
-        Serial_dbg.print("Frequency: "); Serial_dbg.print((float)data[4] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[10] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[16] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[22] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[28] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[34] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading frequency");
-    }
-
-    if (data[5] != NAN || data[11] != NAN || data[17] != NAN || data[23] != NAN || data[29] != NAN || data[35] != NAN) {
-        Serial_dbg.print("PF: "); Serial_dbg.print((float)data[5] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[11] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[17] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[23] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.print((float)data[29] / 100.0, 2); Serial_dbg.print("   "); \
-            Serial_dbg.println((float)data[35] / 100.0, 2);
-    }
-    else {
-        Serial_dbg.println("Error reading power factor");
-    }
+void ReadUIP_3Phase_I2C(int pzem_id) {
+            Serial_dbg.println("\\\\\\\\");
+            Serial_dbg.print("PzemID: "); Serial_dbg.println(Pzem_data_table[pzem_id].PzemID); \
+                Serial_dbg.print("Voltage: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Voltage / 100.0, 2); \
+                Serial_dbg.print("Current: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Current / 100.0, 2); \
+                Serial_dbg.print("Power: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Power / 100.0, 2); \
+                Serial_dbg.print("Energy: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Energy / 100.0, 3); \
+                Serial_dbg.print("Frequency: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Frequency / 100.0, 2); \
+                Serial_dbg.print("PF: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].PF / 100.0, 2);
 }
