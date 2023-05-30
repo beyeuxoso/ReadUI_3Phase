@@ -6,6 +6,7 @@
 #include <SoftwareSerial.h>
 #include <HardwareSerial.h>
 #include <Wire.h>
+#include <IWatchdog.h>
 #include "ThreadController.h"
 #include "Thread.h"
 #include "StaticThreadController.h"
@@ -28,8 +29,8 @@
 #define RX_PZEM2_3     PB3
 #define TX_PZEM2_3     PB4
 
-#define PZEM_COUNT (6U)
-#define bytes_request (25U)
+#define PZEM_NUMBER_MAX         (6U)
+#define bytes_request           (25U)
 #define SCALE_V               (0.1)
 #define SCALE_A               (0.001)
 #define SCALE_P               (0.1)
@@ -77,21 +78,24 @@ enum {
     _RESPONSE_SIZE__
 };
 
-typedef struct{
-    uint8_t PzemID;
+typedef struct __attribute__((packed))
+{
+    //uint8_t PzemID;
+    uint8_t Status;
     uint16_t Voltage;
     uint16_t Current;
-    uint16_t Power;
-    uint32_t Energy;
     uint16_t Frequency;
     uint16_t PF;
-}Pzem_data;
+    uint16_t Power;
+    uint32_t Energy;
+} PzemData_t;
 
-Pzem_data Pzem_data_table[PZEM_COUNT];
-uint8_t Pzem_idx = 0;
-uint8_t Pzem_ID = 0;
+PzemData_t Pzem_data_table[PZEM_NUMBER_MAX];
+
+
 uint8_t Reset_Pzem = 0;
 int i = 0;
+uint8_t CheckPzem[PZEM_NUMBER_MAX];
 
 SoftwareSerial* yy1 = new SoftwareSerial(TX_PZEM1_1, RX_PZEM1_1);
 Stream* port1 = yy1;
@@ -106,38 +110,16 @@ Stream* port5 = yy5;
 SoftwareSerial* yy6 = new SoftwareSerial(TX_PZEM2_3, RX_PZEM2_3);
 Stream* port6 = yy6;
 
-Thread ReadVoltCur1_1 = Thread();
-Thread ReadVoltCur1_2 = Thread();
-Thread ReadVoltCur1_3 = Thread();
-Thread ReadVoltCur2_1 = Thread();
-Thread ReadVoltCur2_2 = Thread();
-Thread ReadVoltCur2_3 = Thread();
-ThreadController controller = ThreadController();
-
-//Modbus Slave(SlaveID, Serial, TXEN);
-uint16_t data[36] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36 };
-
 unsigned long time = 0;
 
 void requestEvent()
 {
-    if (Pzem_ID == 6) Pzem_ID = 0;
-        Wire.write(Pzem_data_table[Pzem_ID].PzemID);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Voltage) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Voltage)>>8) & 0xFF);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Current) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Current) >> 8) & 0xFF);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Frequency) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Frequency) >> 8) & 0xFF);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].PF) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].PF) >> 8) & 0xFF);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Power) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Power) >> 8) & 0xFF);
-        Wire.write((uint8_t)(Pzem_data_table[Pzem_ID].Energy) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 8) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 16) & 0xFF);
-        Wire.write((uint8_t)((Pzem_data_table[Pzem_ID].Energy) >> 24) & 0xFF);
-        Pzem_ID++;
+    static uint8_t PzemId = 1;
+    Wire.write(&PzemId, 1);
+    Wire.write((uint8_t*)&Pzem_data_table[PzemId-1].Status, 15);
+    Wire.endTransmission();
+    PzemId++;
+    if (PzemId > PZEM_NUMBER_MAX) PzemId = 1;
 }
 
 void receiveEvent(int bytes) {
@@ -162,361 +144,105 @@ void Init_I2C()
     Wire.onReceive(receiveEvent);
 }
 
-void Read_PZEM1_1()
+void ReadPzemProcess(Stream* port)
 {
-    SoftwareSerial* tt1;
-    tt1 = (SoftwareSerial*)port1;
-    tt1->begin(9600);
-    while (port1->available()) {
-        port1->read();
-    }
-    if (Reset_Pzem == 0) {
-        port1->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 1) {
-        port1->write(resetEnergy, sizeof(resetEnergy));
+    static uint8_t PzemIdx = 1;
+    SoftwareSerial* ptr;
+    ptr = (SoftwareSerial*)port;
+    ptr->begin(9600);
+    port->flush();
+    if(Reset_Pzem==0)
+    port->write(getValue, sizeof(getValue));
+    if (PzemIdx == Reset_Pzem) {
+        port->write(resetEnergy, sizeof(resetEnergy));
         Reset_Pzem = 0;
     }
     unsigned long temTime = millis();
     bool b_complete = false;
     uint8_t myBuf[bytes_request];
     while ((millis() - temTime) < 100) {
-        if (port1->available()) {
-            port1->readBytes(myBuf, bytes_request);
+        if (port->available()) {
+            port->readBytes(myBuf, bytes_request);
             b_complete = true;
             yield();
             break;
         }
     }
     if (b_complete) {
-        Pzem_data_table[Pzem_idx].PzemID=Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        PzemData_t PzemData = {};
+        PzemData.Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
+        PzemData.Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
+        PzemData.Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
+        PzemData.Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
+        PzemData.Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
+        PzemData.PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
+        PzemData.Status = 1;
+        noInterrupts();
+        memcpy(&Pzem_data_table[PzemIdx-1].Status, &PzemData.Status, 15);
+        interrupts();
     }
     else {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = 0;
-        Pzem_data_table[Pzem_idx].Current = 0;
-        Pzem_data_table[Pzem_idx].Power = 0;
-        Pzem_data_table[Pzem_idx].Energy = 0;
-        Pzem_data_table[Pzem_idx].Frequency = 0;
-        Pzem_data_table[Pzem_idx].PF = 0;
+        if (CheckPzem[PzemIdx - 1] > 3) {
+            CheckPzem[PzemIdx - 1] = 0;
+            noInterrupts();
+            memcpy(&Pzem_data_table[PzemIdx - 1].Status, 0, 15);
+            interrupts();
+        }
+        CheckPzem[PzemIdx - 1]++;
     }
-    Pzem_idx++;
-    yy1->end();
-    tt1->end();
+    ptr->end();
+    PzemIdx++;
+    if (PzemIdx > 6) PzemIdx = 1;
 }
-
-void Read_PZEM1_2()
+void PzemReadDataMain()
 {
-    SoftwareSerial* tt2;
-    tt2 = (SoftwareSerial*)port2;
-    tt2->begin(9600);
-    while (port2->available()) {
-        port2->read();
-    }
-    if (Reset_Pzem == 0) {
-        port2->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 2) {
-        port2->write(resetEnergy, sizeof(resetEnergy));
-        Reset_Pzem = 0;
-    }
-unsigned long temTime = millis();
-bool b_complete = false;
-uint8_t myBuf[bytes_request];
-
-while ((millis() - temTime) < 100) {
-    if (port2->available()) {
-        port2->readBytes(myBuf, bytes_request);
-        b_complete = true;
-        yield();
+    static uint8_t count = 1;
+    switch (count)
+    {
+    case 1:
+        ReadPzemProcess(port1);
+        break;
+    case 2:
+        ReadPzemProcess(port2);
+        break;
+    case 3:
+        ReadPzemProcess(port3);
+        break;
+    case 4:
+        ReadPzemProcess(port4);
+        break;
+    case 5:
+        ReadPzemProcess(port5);
+        break;
+    case 6:
+        ReadPzemProcess(port6);
+        break;
+    default:
         break;
     }
+    count++;
+    if (count > 6) count = 1;
 }
-if (b_complete) {
-    Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-    Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-    Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-    Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-    Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-    Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-    Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
-
+void ReadUIP_3Phase_I2C(int pzem_id) {
+    Serial_dbg.println("\\\\\\\\");
+    Serial_dbg.print("PzemID: "); Serial_dbg.println(pzem_id); \
+        Serial_dbg.print("Voltage: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Voltage / 100.0, 2); \
+        Serial_dbg.print("Current: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Current / 100.0, 2); \
+        Serial_dbg.print("Power: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Power / 100.0, 2); \
+        Serial_dbg.print("Energy: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Energy / 100.0, 3); \
+        Serial_dbg.print("Frequency: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Frequency / 100.0, 2); \
+        Serial_dbg.print("PF: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].PF / 100.0, 2);
 }
-else {
-    Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-    Pzem_data_table[Pzem_idx].Voltage = 0;
-    Pzem_data_table[Pzem_idx].Current = 0;
-    Pzem_data_table[Pzem_idx].Power = 0;
-    Pzem_data_table[Pzem_idx].Energy = 0;
-    Pzem_data_table[Pzem_idx].Frequency = 0;
-    Pzem_data_table[Pzem_idx].PF = 0;
-}
-Pzem_idx++;
-yy2->end();
-tt2->end();
-}
-
-void Read_PZEM1_3()
-{
-    SoftwareSerial* tt3;
-    tt3 = (SoftwareSerial*)port3;
-    tt3->begin(9600);
-    while (port3->available()) {
-        port3->read();
-    }
-    if (Reset_Pzem == 0) {
-        port3->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 3) {
-        port3->write(resetEnergy, sizeof(resetEnergy));
-        Reset_Pzem = 0;
-    }
-    unsigned long temTime = millis();
-    bool b_complete = false;
-    uint8_t myBuf[bytes_request];
-    while ((millis() - temTime) < 100) {
-        if (port3->available()) {
-            port3->readBytes(myBuf, bytes_request);
-            b_complete = true;
-            yield();
-            break;
-        }
-    }
-    if (b_complete) {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
-    }
-    else {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = 0;
-        Pzem_data_table[Pzem_idx].Current = 0;
-        Pzem_data_table[Pzem_idx].Power = 0;
-        Pzem_data_table[Pzem_idx].Energy = 0;
-        Pzem_data_table[Pzem_idx].Frequency = 0;
-        Pzem_data_table[Pzem_idx].PF = 0;
-    }
-    Pzem_idx++;
-    yy3->end();
-    tt3->end();
-}
-
-void Read_PZEM2_1()
-{
-    SoftwareSerial* tt4;
-    tt4 = (SoftwareSerial*)port4;
-    tt4->begin(9600);
-    while (port4->available()) {
-        port4->read();
-    }
-    if (Reset_Pzem == 0) {
-        port4->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 4) {
-        port4->write(resetEnergy, sizeof(resetEnergy));
-        Reset_Pzem = 0;
-    }
-    unsigned long temTime = millis();
-    bool b_complete = false;
-    uint8_t myBuf[bytes_request];
-    while ((millis() - temTime) < 100) {
-        if (port4->available()) {
-            port4->readBytes(myBuf, bytes_request);
-            b_complete = true;
-            yield();
-            break;
-        }
-    }
-    if (b_complete) {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
-    }
-    else {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = 0;
-        Pzem_data_table[Pzem_idx].Current = 0;
-        Pzem_data_table[Pzem_idx].Power = 0;
-        Pzem_data_table[Pzem_idx].Energy = 0;
-        Pzem_data_table[Pzem_idx].Frequency = 0;
-        Pzem_data_table[Pzem_idx].PF = 0;
-    }
-    Pzem_idx++;
-    yy4->end();
-    tt4->end();
-}
-
-void Read_PZEM2_2()
-{
-    SoftwareSerial* tt5;
-    tt5 = (SoftwareSerial*)port5;
-    tt5->begin(9600);
-    while (port5->available()) {
-        port5->read();
-    }
-    if (Reset_Pzem == 0) {
-        port5->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 5) {
-        port5->write(resetEnergy, sizeof(resetEnergy));
-        Reset_Pzem = 0;
-    }
-    unsigned long temTime = millis();
-    bool b_complete = false;
-    uint8_t myBuf[bytes_request];
-    while ((millis() - temTime) < 100) {
-        if (port5->available()) {
-            port5->readBytes(myBuf, bytes_request);
-            b_complete = true;
-            yield();
-            break;
-        }
-    }
-    if (b_complete) {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
-    }
-    else {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx+1;
-        Pzem_data_table[Pzem_idx].Voltage = 0;
-        Pzem_data_table[Pzem_idx].Current = 0;
-        Pzem_data_table[Pzem_idx].Power = 0;
-        Pzem_data_table[Pzem_idx].Energy = 0;
-        Pzem_data_table[Pzem_idx].Frequency = 0;
-        Pzem_data_table[Pzem_idx].PF = 0;
-    }
-    Pzem_idx++;
-    yy5->end();
-    tt5->end();
-}
-
-void Read_PZEM2_3()
-{
-    SoftwareSerial* tt6;
-    tt6 = (SoftwareSerial*)port6;
-    tt6->begin(9600);
-    while (port6->available()) {
-        port6->read();
-    }
-    if (Reset_Pzem == 0) {
-        port6->write(getValue, sizeof(getValue));
-    }
-    if (Reset_Pzem == 6) {
-        port6->write(resetEnergy, sizeof(resetEnergy));
-        Reset_Pzem = 0;
-    }
-    unsigned long temTime = millis();
-    bool b_complete = false;
-    uint8_t myBuf[bytes_request];
-    while ((millis() - temTime) < 100) {
-        if (port6->available()) {
-            port6->readBytes(myBuf, bytes_request);
-            b_complete = true;
-            yield();
-            break;
-        }
-    }
-    if (b_complete) {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx + 1;
-        Pzem_data_table[Pzem_idx].Voltage = (uint16_t)(PZEM_GET_VALUE(voltage, SCALE_V) * 100);
-        Pzem_data_table[Pzem_idx].Current = (uint16_t)(PZEM_GET_VALUE2(ampe, SCALE_A) * 100);
-        Pzem_data_table[Pzem_idx].Power = (uint16_t)(PZEM_GET_VALUE2(power, SCALE_P) * 100);
-        Pzem_data_table[Pzem_idx].Energy = (uint32_t)(PZEM_GET_VALUE2(energy, SCALE_E) * 1000);
-        Pzem_data_table[Pzem_idx].Frequency = (uint16_t)(PZEM_GET_VALUE(freq, SCALE_H) * 100);
-        Pzem_data_table[Pzem_idx].PF = (uint16_t)(PZEM_GET_VALUE(powerFactor, SCALE_PF) * 100);
-    }
-    else {
-        Pzem_data_table[Pzem_idx].PzemID = Pzem_idx + 1;
-        Pzem_data_table[Pzem_idx].Voltage = 0;
-        Pzem_data_table[Pzem_idx].Current = 0;
-        Pzem_data_table[Pzem_idx].Power = 0;
-        Pzem_data_table[Pzem_idx].Energy = 0;
-        Pzem_data_table[Pzem_idx].Frequency = 0;
-        Pzem_data_table[Pzem_idx].PF = 0;
-    }
-    Pzem_idx = 0;
-    yy6->end();
-    tt6->end();
-}
-
-void Init_Thread()
-{
-    ReadVoltCur1_1.enabled = true;
-    ReadVoltCur1_1.setInterval(1000);
-    ReadVoltCur1_1.onRun(Read_PZEM1_1);
-
-    ReadVoltCur1_2.enabled = true;
-    ReadVoltCur1_2.setInterval(1000);
-    ReadVoltCur1_2.onRun(Read_PZEM1_2);
-
-    ReadVoltCur1_3.enabled = true;
-    ReadVoltCur1_3.setInterval(1000);
-    ReadVoltCur1_3.onRun(Read_PZEM1_3);
-
-    ReadVoltCur2_1.enabled = true;
-    ReadVoltCur2_1.setInterval(1000);
-    ReadVoltCur2_1.onRun(Read_PZEM2_1);
-
-    ReadVoltCur2_2.enabled = true;
-    ReadVoltCur2_2.setInterval(1000);
-    ReadVoltCur2_2.onRun(Read_PZEM2_2);
-
-    ReadVoltCur2_3.enabled = true;
-    ReadVoltCur2_3.setInterval(1000);
-    ReadVoltCur2_3.onRun(Read_PZEM2_3);
-
-    controller.setInterval(10);
-    controller.add(&ReadVoltCur1_1);
-    controller.add(&ReadVoltCur1_2);
-    controller.add(&ReadVoltCur1_3);
-    controller.add(&ReadVoltCur2_1);
-    controller.add(&ReadVoltCur2_2);
-    controller.add(&ReadVoltCur2_3);
-}
-
-//// Init STM32 timer TIM1
-//STM32Timer ITimer0(TIM1);
-//#define ISR_TIMER_INTERVAL  1
-//void TimerHandler0()
-//{
-//    //Serial_dbg.println("Call timmer 0");
-//    Slave.poll(data, 36);
-//}
 
 // the setup function runs once when you press reset or power the board
 void setup() {
-    Init_Thread();
-    Serial.begin(9600);
+
     Serial_dbg.begin(9600);
     Init_I2C();
+    IWatchdog.begin(4000000);
     //Slave.start();
     Serial_dbg.println("Start:");
-    // Interval in microsecs
-    /*if (ITimer0.attachInterruptInterval(ISR_TIMER_INTERVAL * 50, TimerHandler0))
-    {
-        Serial_dbg.print(F("Starting ITimer0 OK, millis() = ")); Serial_dbg.println(millis());
-    }
-    else
-        Serial_dbg.println(F("Can't set ITimer0. Select another freq. or timer"));*/
+
 }
 
 // the loop function runs over and over again until power down or reset
@@ -529,33 +255,8 @@ void loop() {
         time = millis();
     }
 #endif
-    controller.run();
-}
 
+    PzemReadDataMain();    
 
-void ReadUIP_3Phase_modbus() {
-        Serial_dbg.println("\\\\\\\\");
-        if (data[i] != NAN || data[i+6] != NAN || data[i+12] != NAN || data[i+18] != NAN || data[i+24] != NAN || data[i+30] != NAN) {
-            Serial_dbg.printf("Pzem%d: ", i + 1);  Serial_dbg.println();
-            Serial_dbg.print("Voltage:");    Serial_dbg.println((float)data[i] / 100.0, 2); \
-            Serial_dbg.print("Current:");    Serial_dbg.println((float)data[i+1] / 100.0, 2); \
-            Serial_dbg.print("Power:");    Serial_dbg.println((float)data[i+2] / 100.0, 2); \
-            Serial_dbg.print("Energy:");    Serial_dbg.println((float)data[i+3] / 100.0, 3); \
-            Serial_dbg.print("Frequency:");    Serial_dbg.println((float)data[i+4] / 100.0, 2); \
-            Serial_dbg.print("PF:");    Serial_dbg.println((float)data[i+5] / 100.0, 2); \
-        }
-        else {
-            Serial_dbg.println("Error reading");
-        }
-}
-
-void ReadUIP_3Phase_I2C(int pzem_id) {
-            Serial_dbg.println("\\\\\\\\");
-            Serial_dbg.print("PzemID: "); Serial_dbg.println(Pzem_data_table[pzem_id].PzemID); \
-                Serial_dbg.print("Voltage: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Voltage / 100.0, 2); \
-                Serial_dbg.print("Current: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Current / 100.0, 2); \
-                Serial_dbg.print("Power: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Power / 100.0, 2); \
-                Serial_dbg.print("Energy: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Energy / 100.0, 3); \
-                Serial_dbg.print("Frequency: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].Frequency / 100.0, 2); \
-                Serial_dbg.print("PF: "); Serial_dbg.println((float)Pzem_data_table[pzem_id].PF / 100.0, 2);
+    IWatchdog.reload();
 }
